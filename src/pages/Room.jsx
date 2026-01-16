@@ -1,5 +1,6 @@
 import { useParams, useNavigate } from "react-router-dom";
 import { useState, useEffect, useRef } from "react";
+import io from "socket.io-client";
 import VideoTile from "../components/VideoTile";
 import ControlButton from "../components/ControlButton";
 
@@ -16,6 +17,59 @@ export default function Room() {
 
   // ref for chat scroll
   const chatEndRef = useRef(null);
+
+  // WebSocket signaling
+  const socketRef = useRef(null);
+
+  useEffect(() => {
+    // Connect to signaling server
+    socketRef.current = io("http://localhost:5000", {
+      // Add JWT token if available (from localStorage or context)
+      // auth: { token: localStorage.getItem('token') }
+    });
+
+    const socket = socketRef.current;
+
+    socket.on("connect", () => {
+      console.log("Connected to signaling server");
+      // Join the room
+      socket.emit("join_room", { room_id: roomId });
+    });
+
+    socket.on("disconnect", () => {
+      console.log("Disconnected from signaling server");
+    });
+
+    // Signaling events (placeholders for WebRTC)
+    socket.on("offer", (data) => {
+      console.log("Received offer:", data);
+      // TODO: Handle offer in WebRTC
+    });
+
+    socket.on("answer", (data) => {
+      console.log("Received answer:", data);
+      // TODO: Handle answer in WebRTC
+    });
+
+    socket.on("ice_candidate", (data) => {
+      console.log("Received ICE candidate:", data);
+      // TODO: Handle ICE candidate in WebRTC
+    });
+
+    socket.on("user_joined", (data) => {
+      console.log("User joined:", data);
+      // TODO: Update participant list
+    });
+
+    socket.on("user_left", (data) => {
+      console.log("User left:", data);
+      // TODO: Update participant list
+    });
+
+    return () => {
+      socket.disconnect();
+    };
+  }, [roomId]);
 
   const sendMessage = () => {
     if (!input.trim()) return;
@@ -104,7 +158,10 @@ export default function Room() {
       <div className="absolute bottom-6 left-1/2 -translate-x-1/2 flex gap-6">
         <ControlButton type="mute" />
         <ControlButton type="camera" />
-        <ControlButton type="leave" onClick={() => navigate("/")} />
+        <ControlButton type="leave" onClick={() => {
+          socketRef.current?.emit("leave_room", { room_id: roomId });
+          navigate("/");
+        }} />
       </div>
     </div>
   );
