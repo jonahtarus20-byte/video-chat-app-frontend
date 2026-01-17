@@ -5,35 +5,32 @@ import {
   PhoneXMarkIcon,
 } from "@heroicons/react/24/solid";
 
-export default function ControlButton({ type, onClick }) {
-  const [active, setActive] = useState(true);
-
+export default function ControlButton({ type, onClick, isActive = true }) {
   let icon;
   let bg = "bg-blue-600";
 
   // Toggle icon for mic/camera and background slightly
   if (type === "mute") {
-    icon = active
-      ? <MicrophoneIcon className="w-8 h-8 text-blue-600" />
-      : <MicrophoneIcon className="w-8 h-8 text-blue-600" />;
-    bg = active ? "bg-blue-600" : "bg-blue-300"; // lighter when off
+    icon = isActive
+      ? <MicrophoneIcon className="w-8 h-8 text-white" />
+      : <MicrophoneIcon className="w-8 h-8 text-white" />;
+    bg = isActive ? "bg-blue-600" : "bg-red-600"; // red when muted
   }
 
   if (type === "camera") {
-    icon = active
-      ? <VideoCameraIcon className="w-8 h-8 text-blue-600" />
-      : <VideoCameraIcon className="w-8 h-8 text-blue-600" />;
-    bg = active ? "bg-blue-600" : "bg-blue-300"; // lighter when off
+    icon = isActive
+      ? <VideoCameraIcon className="w-8 h-8 text-white" />
+      : <VideoCameraIcon className="w-8 h-8 text-white" />;
+    bg = isActive ? "bg-blue-600" : "bg-red-600"; // red when off
   }
 
   if (type === "leave") {
-    icon = <PhoneXMarkIcon className="w-8 h-8 text-blue-600" />;
+    icon = <PhoneXMarkIcon className="w-8 h-8 text-white" />;
     bg = "bg-red-600";
   }
 
   const handleClick = () => {
-    if (type === "mute" || type === "camera") setActive(!active);
-    if (onClick) onClick(active);
+    if (onClick) onClick();
   };
 
   return (
