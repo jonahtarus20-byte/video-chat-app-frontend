@@ -1,12 +1,14 @@
 import { useParams, useNavigate } from "react-router-dom";
 import { useState, useEffect, useRef } from "react";
 import io from "socket.io-client";
+import { auth } from "../firebase";
 import VideoTile from "../components/VideoTile";
 import ControlButton from "../components/ControlButton";
 
 export default function Room() {
   const { roomId } = useParams();
   const navigate = useNavigate();
+ main
   const [localStream, setLocalStream] = useState(null);
   const [isCameraOn, setIsCameraOn] = useState(true);
   const [isMicOn, setIsMicOn] = useState(true);
@@ -19,7 +21,17 @@ export default function Room() {
   const mediaRecorderRef = useRef(null);
   const recordedChunksRef = useRef([]);
 
-  // chat state (UI ONLY)
+ main
+
+  // WebRTC state
+  const [localStream, setLocalStream] = useState(null);
+  const [remoteStreams, setRemoteStreams] = useState([]);
+  const [isMuted, setIsMuted] = useState(false);
+  const [isCameraOff, setIsCameraOff] = useState(false);
+  const peerConnectionsRef = useRef({});
+  const socketRef = useRef(null);
+
+  // chat state
   const [messages, setMessages] = useState([
     { sender: "System", text: "Welcome to the room" },
   ]);
@@ -28,6 +40,7 @@ export default function Room() {
   // ref for chat scroll
   const chatEndRef = useRef(null);
 
+ main
   // WebSocket signaling
   const socketRef = useRef(null);
 
@@ -121,6 +134,83 @@ export default function Room() {
       setIsRecording(false);
     }
   };
+  useEffect(() => {
+    // Get user media
+    navigator.mediaDevices
+      .getUserMedia({ video: true, audio: true })
+      .then((stream) => {
+        setLocalStream(stream);
+      })
+      .catch((err) => console.error("Error accessing media devices:", err));
+
+    // Connect to signaling server
+    socketRef.current = io("http://localhost:5000");
+
+    const socket = socketRef.current;
+
+    socket.on("connect", () => {
+      console.log("Connected to signaling server");
+      auth.currentUser?.getIdToken().then((token) => {
+        socket.emit("join_room", { room_id: roomId, token });
+      }).catch((err) => {
+        console.error("Error getting JWT token:", err);
+      });
+    });
+
+    socket.on("disconnect", () => {
+      console.log("Disconnected from signaling server");
+    });
+
+    // WebRTC signaling
+    socket.on("offer", async (data) => {
+      const { offer, from } = data;
+      const pc = createPeerConnection(from);
+      await pc.setRemoteDescription(new RTCSessionDescription(offer));
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      auth.currentUser?.getIdToken().then((token) => {
+        socket.emit("answer", { answer, to: from, room_id: roomId, token });
+      }).catch((err) => {
+        console.error("Error getting JWT token:", err);
+      });
+    });
+
+    socket.on("answer", async (data) => {
+      const { answer, from } = data;
+      const pc = peerConnectionsRef.current[from];
+      if (pc) {
+        await pc.setRemoteDescription(new RTCSessionDescription(answer));
+      }
+    });
+
+    socket.on("ice_candidate", (data) => {
+      const { candidate, from } = data;
+      const pc = peerConnectionsRef.current[from];
+      if (pc) {
+        pc.addIceCandidate(new RTCIceCandidate(candidate));
+      }
+    });
+
+    socket.on("user_joined", (data) => {
+      const { user_id } = data;
+      if (user_id !== socket.id) {
+        createPeerConnection(user_id);
+      }
+    });
+
+    socket.on("user_left", (data) => {
+      const { user_id } = data;
+      if (peerConnectionsRef.current[user_id]) {
+        peerConnectionsRef.current[user_id].close();
+        delete peerConnectionsRef.current[user_id];
+        setRemoteStreams((prev) => prev.filter((s) => s.id !== user_id));
+      }
+    });
+
+    socket.on("chat_message", (data) => {
+      setMessages((prev) => [...prev, data]);
+    });
+main
 
   const toggleScreenShare = async () => {
     try {
@@ -222,17 +312,80 @@ export default function Room() {
     
     // Cleanup function
     return () => {
+ main
       if (socketRef.current) {
         socketRef.current.disconnect();
+
+      socket.disconnect();
+      Object.values(peerConnectionsRef.current).forEach((pc) => pc.close());
+      if (localStream) {
+        localStream.getTracks().forEach((track) => track.stop());
+ main
       }
     };
   }, [roomId]);
 
+  const createPeerConnection = (userId) => {
+    const pc = new RTCPeerConnection({
+      iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+    });
+
+    peerConnectionsRef.current[userId] = pc;
+
+    // Add local stream
+    if (localStream) {
+      localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
+    }
+
+    pc.onicecandidate = (event) => {
+      if (event.candidate) {
+        auth.currentUser?.getIdToken().then((token) => {
+          socketRef.current.emit("ice_candidate", {
+            candidate: event.candidate,
+            to: userId,
+            room_id: roomId,
+            token,
+          });
+        }).catch((err) => {
+          console.error("Error getting JWT token:", err);
+        });
+      }
+    };
+
+    pc.ontrack = (event) => {
+      setRemoteStreams((prev) => [
+        ...prev.filter((s) => s.id !== userId),
+        { id: userId, stream: event.streams[0] },
+      ]);
+    };
+
+    return pc;
+  };
+
+  const toggleMute = () => {
+    if (localStream) {
+      localStream.getAudioTracks().forEach((track) => {
+        track.enabled = isMuted;
+      });
+      setIsMuted(!isMuted);
+    }
+  };
+
+  const toggleCamera = () => {
+    if (localStream) {
+      localStream.getVideoTracks().forEach((track) => {
+        track.enabled = isCameraOff;
+      });
+      setIsCameraOff(!isCameraOff);
+    }
+  };
+
   const sendMessage = () => {
     if (!input.trim()) return;
 
-    // add new message
-    setMessages((prev) => [...prev, { sender: "You", text: input }]);
+    const message = { sender: "You", text: input };
+    setMessages((prev) => [...prev, message]);
+    socketRef.current.emit("chat_message", { ...message, room_id: roomId });
     setInput("");
   };
 
@@ -240,6 +393,11 @@ export default function Room() {
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  const allStreams = [
+    { id: "local", stream: localStream, name: "You" },
+    ...remoteStreams.map((rs) => ({ ...rs, name: `User ${rs.id.slice(0, 4)}` })),
+  ];
 
   return (
     <div className="w-screen h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 flex flex-col relative overflow-hidden">
@@ -278,6 +436,7 @@ export default function Room() {
         </div>
       </header>
 
+ main
       {/* Main Content */}
       <div className="flex flex-col lg:flex-row flex-1 overflow-hidden relative min-h-0">
         
@@ -440,6 +599,15 @@ export default function Room() {
               
             </div>
           )}
+
+      {/* Main content */}
+      <div className="flex flex-1 overflow-hidden">
+        {/* Video area */}
+        <div className="flex-1 grid grid-cols-1 sm:grid-cols-2 gap-2 p-2">
+          {allStreams.map((tile) => (
+            <VideoTile key={tile.id} stream={tile.stream} name={tile.name} />
+          ))}
+ main
         </div>
 
         {/* Chat Sidebar - Hidden on mobile */}
@@ -511,6 +679,7 @@ export default function Room() {
         </div>
       </div>
 
+ main
       {/* Bottom Controls */}
       <div className="p-2 sm:p-4 bg-black/30 backdrop-blur-xl border-t border-white/10 flex-shrink-0">
         <div className="flex justify-center gap-1 sm:gap-3">
@@ -528,6 +697,19 @@ export default function Room() {
             navigate("/");
           }} />
         </div>
+
+      {/* Controls */}
+      <div className="absolute bottom-6 left-1/2 -translate-x-1/2 flex gap-6">
+        <ControlButton type="mute" isActive={!isMuted} onClick={toggleMute} />
+        <ControlButton type="camera" isActive={!isCameraOff} onClick={toggleCamera} />
+        <ControlButton
+          type="leave"
+          onClick={() => {
+            socketRef.current?.emit("leave_room", { room_id: roomId });
+            navigate("/");
+          }}
+        />
+ main
       </div>
     </div>
   );

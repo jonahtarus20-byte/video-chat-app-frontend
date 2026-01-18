@@ -1,4 +1,5 @@
 // src/components/VideoTile.jsx
+ main
 export default function VideoTile({ name }) {
   const displayName = name || "Unknown User";
   
@@ -29,6 +30,32 @@ export default function VideoTile({ name }) {
       
       {/* Glow effect */}
       <div className="absolute inset-0 rounded-3xl bg-gradient-to-r from-cyan-500/20 to-purple-500/20 opacity-0 group-hover:opacity-100 transition-opacity duration-500 blur-xl"></div>
+import { useRef, useEffect } from "react";
+
+export default function VideoTile({ stream, name }) {
+  const videoRef = useRef(null);
+
+  useEffect(() => {
+    if (videoRef.current && stream) {
+      videoRef.current.srcObject = stream;
+    }
+  }, [stream]);
+
+  return (
+    <div className="w-full h-full bg-blue-100 rounded-xl flex items-center justify-center text-blue-600 font-bold text-lg shadow-md relative overflow-hidden">
+      {stream ? (
+        <video
+          ref={videoRef}
+          autoPlay
+          muted
+          className="w-full h-full object-cover rounded-xl scale-x-[-1]"
+        />
+      ) : (
+        <div className="flex items-center justify-center w-full h-full">
+          {name}
+        </div>
+      )}
+ main
     </div>
   );
 }
