@@ -7,25 +7,37 @@ import ControlButton from "../components/ControlButton";
 export default function Room() {
   const { roomId } = useParams();
   const navigate = useNavigate();
+
+  // Local media state
   const [localStream, setLocalStream] = useState(null);
   const [remoteStreams, setRemoteStreams] = useState([]);
   const [isCameraOn, setIsCameraOn] = useState(true);
   const [isMicOn, setIsMicOn] = useState(true);
+ main
   const [isRecording, setIsRecording] = useState(false);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [zoomLevel, setZoomLevel] = useState(1);
   const [focusedVideo, setFocusedVideo] = useState(null);
-  const localVideoRef = useRef(null);
-  const mediaRecorderRef = useRef(null);
-  const recordedChunksRef = useRef([]);
 
+ main
+  const localVideoRef = useRef(null);
+
+ main
   // chat state
+  // WebRTC state
+  const [remoteStreams, setRemoteStreams] = useState([]);
+  const peerConnectionsRef = useRef({});
+  const socketRef = useRef(null);
+
+  // Chat state
+ main
   const [messages, setMessages] = useState([
     { sender: "System", text: "Welcome to the room" },
   ]);
   const [input, setInput] = useState("");
   const chatEndRef = useRef(null);
 
+ main
   // WebSocket signaling
   const socketRef = useRef(null);
   const peerConnections = useRef({});
@@ -120,6 +132,8 @@ export default function Room() {
     }
   };
 
+
+ main
   // Get user media on component mount
   useEffect(() => {
     const getUserMedia = async () => {
@@ -154,6 +168,7 @@ export default function Room() {
     }
   }, [localStream]);
 
+ main
   // Socket connection
   useEffect(() => {
     if (!localStream) return;
@@ -231,20 +246,53 @@ export default function Room() {
       if (videoTrack) {
         videoTrack.enabled = !videoTrack.enabled;
         setIsCameraOn(videoTrack.enabled);
-      }
-    }
-  };
 
-  const toggleMic = () => {
-    if (localStream) {
-      const audioTrack = localStream.getAudioTracks()[0];
-      if (audioTrack) {
-        audioTrack.enabled = !audioTrack.enabled;
-        setIsMicOn(audioTrack.enabled);
-      }
-    }
-  };
+  // Socket.IO and WebRTC setup
+  useEffect(() => {
+    const serverUrl = import.meta.env.VITE_SOCKET_URL || "http://localhost:5000";
+    socketRef.current = io(serverUrl);
 
+    const socket = socketRef.current;
+
+    socket.on("connect", () => {
+      console.log("Connected to signaling server");
+      // For development, use a simple user ID
+      const userId = `user_${socket.id}`;
+      socket.emit("join_room", { room_id: roomId, token: userId });
+    });
+
+    socket.on("disconnect", () => {
+      console.log("Disconnected from signaling server");
+    });
+
+    // WebRTC signaling
+    socket.on("offer", async (data) => {
+      const { offer, from } = data;
+      const pc = createPeerConnection(from);
+      await pc.setRemoteDescription(new RTCSessionDescription(offer));
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      socketRef.current.emit("answer", { answer, room_id: roomId, token: `user_${socketRef.current.id}` });
+    });
+
+    socket.on("answer", async (data) => {
+      const { answer, from } = data;
+      const pc = peerConnectionsRef.current[from];
+      if (pc) {
+        await pc.setRemoteDescription(new RTCSessionDescription(answer));
+ main
+      }
+    });
+
+    socket.on("ice_candidate", (data) => {
+      const { candidate, from } = data;
+      const pc = peerConnectionsRef.current[from];
+      if (pc) {
+        pc.addIceCandidate(new RTCIceCandidate(candidate));
+      }
+    });
+
+ main
   const toggleVideoFocus = (videoType) => {
     if (focusedVideo === videoType) {
       setFocusedVideo(null); // Return to grid view
@@ -282,18 +330,63 @@ export default function Room() {
     } else {
       if (mediaRecorderRef.current) {
         mediaRecorderRef.current.stop();
-      }
-      setIsRecording(false);
-    }
-  };
 
-  const toggleScreenShare = async () => {
-    try {
-      if (!isScreenSharing) {
-        const screenStream = await navigator.mediaDevices.getDisplayMedia({
-          video: true,
-          audio: true
+    socket.on("user_joined", (data) => {
+      const { user_id } = data;
+      if (user_id !== socket.id) {
+        createPeerConnection(user_id);
+      }
+    });
+
+    socket.on("user_left", (data) => {
+      const { user_id } = data;
+      if (peerConnectionsRef.current[user_id]) {
+        peerConnectionsRef.current[user_id].close();
+        delete peerConnectionsRef.current[user_id];
+        setRemoteStreams((prev) => prev.filter((s) => s.id !== user_id));
+      }
+    });
+
+    socket.on("chat_message", (data) => {
+      setMessages((prev) => [...prev, data]);
+    });
+
+    socket.on("error", (data) => {
+      console.error("Socket error:", data.message);
+      alert(data.message);
+    });
+
+    // Cleanup function
+    return () => {
+      socket.disconnect();
+      Object.values(peerConnectionsRef.current).forEach((pc) => pc.close());
+      if (localStream) {
+        localStream.getTracks().forEach((track) => track.stop());
+ main
+      }
+    };
+  }, [roomId, localStream]);
+
+  const createPeerConnection = (userId) => {
+    const pc = new RTCPeerConnection({
+      iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+    });
+
+    peerConnectionsRef.current[userId] = pc;
+
+    // Add local stream
+    if (localStream) {
+      localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
+    }
+
+    pc.onicecandidate = (event) => {
+      if (event.candidate) {
+        socketRef.current.emit("ice_candidate", {
+          candidate: event.candidate,
+          room_id: roomId,
+          token: `user_${socketRef.current.id}`,
         });
+ main
         
         // Stop current stream
         if (localStream) {
@@ -319,13 +412,12 @@ export default function Room() {
           stopScreenShare();
         };
       } else {
-        stopScreenShare();
+        stopScreenShare()
+ main
       }
-    } catch (error) {
-      console.error('Error sharing screen:', error);
-    }
-  };
+    };
 
+ main
   const stopScreenShare = async () => {
     try {
       // Stop screen sharing, go back to camera
@@ -395,9 +487,78 @@ export default function Room() {
     return "grid-cols-2 lg:grid-cols-3";
   };
 
+    pc.ontrack = (event) => {
+      setRemoteStreams((prev) => [
+        ...prev.filter((s) => s.id !== userId),
+        { id: userId, stream: event.streams[0] },
+      ]);
+    };
+
+    // Create offer if we're the initiator
+    if (Object.keys(peerConnectionsRef.current).length === 1) {
+      pc.createOffer().then((offer) => {
+        pc.setLocalDescription(offer);
+        socketRef.current.emit("offer", { offer, room_id: roomId, token: `user_${socketRef.current.id}` });
+      });
+    }
+
+    return pc;
+  };
+
+  const toggleCamera = () => {
+    if (localStream) {
+      const videoTrack = localStream.getVideoTracks()[0];
+      if (videoTrack) {
+        videoTrack.enabled = !videoTrack.enabled;
+        setIsCameraOn(videoTrack.enabled);
+      }
+    }
+  };
+
+  const toggleMic = () => {
+    if (localStream) {
+      const audioTrack = localStream.getAudioTracks()[0];
+      if (audioTrack) {
+        audioTrack.enabled = !audioTrack.enabled;
+        setIsMicOn(audioTrack.enabled);
+      }
+    }
+  };
+
+  const sendMessage = () => {
+    if (!input.trim()) return;
+
+    const message = { sender: "You", text: input };
+    setMessages((prev) => [...prev, message]);
+    socketRef.current.emit("chat_message", { ...message, room_id: roomId });
+    setInput("");
+  };
+
+  // Scroll to bottom when messages update
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+ main
+
+  const allStreams = [
+    { id: "local", stream: localStream, name: "You" },
+    ...remoteStreams.map((rs) => ({ ...rs, name: `User ${rs.id.slice(0, 4)}` })),
+  ];
+
   return (
+ main
     <div className="w-screen h-screen bg-gray-900 flex flex-col relative overflow-hidden">
       
+
+    <div className="w-screen h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 flex flex-col relative overflow-hidden">
+
+      {/* Background */}
+      <div className="absolute inset-0 opacity-10">
+        <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-gradient-to-r from-cyan-500/20 to-blue-500/20 rounded-full filter blur-3xl animate-pulse"></div>
+        <div className="absolute bottom-1/4 right-1/4 w-80 h-80 bg-gradient-to-r from-blue-500/20 to-purple-500/20 rounded-full filter blur-3xl animate-pulse animation-delay-2000"></div>
+      </div>
+
+ main
       {/* Header */}
       <header className="bg-gray-800 shadow-sm px-2 py-0.5 border-b border-gray-700 relative z-10 flex-shrink-0">
         <div className="flex justify-between items-center">
@@ -409,11 +570,19 @@ export default function Room() {
               <h1 className="text-xs font-semibold text-white">CONVO</h1>
             </div>
           </div>
+ main
           
           <div className="flex items-center">
             <div className="flex items-center gap-1 px-2 py-0.5 bg-gray-700 rounded border border-gray-600">
               <div className="w-1.5 h-1.5 bg-green-400 rounded-full"></div>
               <span className="text-white font-medium text-xs">{1 + remoteStreams.length}</span>
+
+
+          <div className="flex items-center gap-2 sm:gap-4 text-xs sm:text-sm">
+            <div className="flex items-center gap-1 sm:gap-2 px-2 py-1 sm:px-3 sm:py-1.5 bg-white/10 backdrop-blur rounded-lg border border-white/20">
+              <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse"></div>
+              <span className="text-white font-medium">{allStreams.length} users</span>
+ main
             </div>
           </div>
         </div>
@@ -421,9 +590,10 @@ export default function Room() {
 
       {/* Main Content */}
       <div className="flex flex-col lg:flex-row flex-1 overflow-hidden relative min-h-0">
-        
+
         {/* Video Grid */}
         <div className="flex-1 p-2 sm:p-4 min-h-0">
+ main
           {focusedVideo ? (
             // Focused video view
             <div className="h-full">
@@ -623,6 +793,22 @@ export default function Room() {
         {/* Chat Sidebar */}
         <div className="hidden lg:flex w-64 bg-gray-800 border-l border-gray-700 flex-col shadow-lg min-h-0">
           
+=======
+          <div className={`grid gap-2 sm:gap-4 h-full ${
+            allStreams.length === 1 ? 'grid-cols-1' :
+            allStreams.length === 2 ? 'grid-cols-1 lg:grid-cols-2' :
+            'grid-cols-1 lg:grid-cols-2 xl:grid-cols-3'
+          }`}>
+            {allStreams.map((tile) => (
+              <VideoTile key={tile.id} stream={tile.stream} name={tile.name} />
+            ))}
+          </div>
+        </div>
+
+        {/* Chat Sidebar - Hidden on mobile */}
+        <div className="hidden lg:flex w-80 bg-black/40 backdrop-blur-xl border-l border-white/10 flex-col shadow-xl min-h-0">
+
+ main
           {/* Chat Header */}
           <div className="p-3 border-b border-gray-700 flex-shrink-0 bg-gray-750">
             <h3 className="text-sm font-semibold text-white flex items-center gap-2">
@@ -638,7 +824,7 @@ export default function Room() {
             {messages.map((msg, i) => {
               const isYou = msg.sender === "You";
               const isSystem = msg.sender === "System";
-              
+
               if (isSystem) {
                 return (
                   <div key={i} className="text-center py-1">
@@ -648,7 +834,7 @@ export default function Room() {
                   </div>
                 );
               }
-              
+
               return (
                 <div key={i} className={`flex ${isYou ? "justify-end" : "justify-start"}`}>
                   <div className="max-w-[75%]">
@@ -696,6 +882,7 @@ export default function Room() {
       </div>
 
       {/* Bottom Controls */}
+ main
       <div className="p-3 bg-gray-800 border-t border-gray-700 flex-shrink-0">
         <div className="flex justify-center items-center gap-3">
           <div className="flex items-center gap-2">
@@ -716,6 +903,24 @@ export default function Room() {
               navigate("/");
             }} />
           </div>
+
+      <div className="p-2 sm:p-4 bg-black/30 backdrop-blur-xl border-t border-white/10 flex-shrink-0">
+        <div className="flex justify-center gap-1 sm:gap-3">
+          <ControlButton type="mute" isActive={isMicOn} onClick={toggleMic} />
+          <ControlButton type="camera" isActive={isCameraOn} onClick={toggleCamera} />
+          <ControlButton
+            type="leave"
+            onClick={() => {
+              if (localStream) {
+                localStream.getTracks().forEach(track => track.stop());
+              }
+              if (socketRef.current) {
+                socketRef.current.emit("leave_room", { room_id: roomId });
+              }
+              navigate("/");
+            }}
+          />
+ main
         </div>
       </div>
     </div>

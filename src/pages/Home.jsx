@@ -1,21 +1,9 @@
 import { useNavigate } from "react-router-dom";
-import { useState, useEffect } from "react";
-import LoginModal from "../components/LoginModal";
-import { auth } from "../firebase";
-import { onAuthStateChanged, signOut } from "firebase/auth";
+import { useState } from "react";
 
 export default function Home() {
   const navigate = useNavigate();
   const [joinRoomId, setJoinRoomId] = useState("");
-  const [isLoginOpen, setIsLoginOpen] = useState(false);
-  const [user, setUser] = useState(null);
-
-  useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-      setUser(currentUser);
-    });
-    return () => unsubscribe();
-  }, []);
 
   const createRoom = async () => {
     console.log("Creating room...");
@@ -32,14 +20,7 @@ export default function Home() {
 
   const joinRoom = () => {
     if (!joinRoomId.trim()) return alert("Please enter a room ID.");
-    navigate(`/room/${joinRoomId}`);
-  };
-
-  const openLogin = () => setIsLoginOpen(true);
-  const closeLogin = () => setIsLoginOpen(false);
-  const logout = async () => {
-    await signOut(auth);
-    setUser(null);
+    navigate(`/room/${joinRoomId}/premeeting`);
   };
 
   return (
@@ -56,6 +37,7 @@ export default function Home() {
           </h1>
         </div>
 
+ main
         <div>
           {user ? (
             <div className="flex items-center gap-2">
@@ -80,6 +62,12 @@ export default function Home() {
               Sign In
             </button>
           )}
+
+        <div className="w-full sm:w-auto">
+          <div className="text-white text-sm sm:text-base font-medium">
+            Video Call App
+          </div>
+ main
         </div>
       </header>
 
@@ -150,8 +138,13 @@ export default function Home() {
                       </button>
                     </div>
                     <button
+ main
                       onClick={() => navigate(`/room/${joinRoomId}`)}
                       className="w-full mt-1 py-1 bg-blue-600 text-white rounded text-xs font-bold"
+
+                      onClick={() => navigate(`/room/${joinRoomId}/premeeting`)}
+                      className="w-full mt-2 py-2 px-4 bg-gradient-to-r from-green-600 to-emerald-600 text-white rounded-lg font-semibold hover:from-green-700 hover:to-emerald-700 transition-all text-sm"
+ main
                     >
                       Join
                     </button>
@@ -190,9 +183,6 @@ export default function Home() {
         </div>
 
       </main>
-
-      {/* Login modal */}
-      <LoginModal isOpen={isLoginOpen} onClose={closeLogin} />
 
     </div>
   );
