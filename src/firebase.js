@@ -3,13 +3,13 @@ import { initializeApp } from "firebase/app";
 import { getAuth, GoogleAuthProvider } from "firebase/auth";
 
 const firebaseConfig = {
-  apiKey: "AIzaSyAfhkTdGDchE3_NG4Zo3CNs0RZq9X4wQHU",
-  authDomain: "video-chat-app-6ce34.firebaseapp.com",
-  projectId: "video-chat-app-6ce34",
-  storageBucket: "video-chat-app-6ce34.firebasestorage.app",
-  messagingSenderId: "751696686702",
-  appId: "1:751696686702:web:fd1ad058d71fb3f589007f",
-  measurementId: "G-MSNGB532PL"
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+  appId: import.meta.env.VITE_FIREBASE_APP_ID,
+  measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID
 };
 
 // Initialize Firebase
