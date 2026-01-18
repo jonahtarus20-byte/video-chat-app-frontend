@@ -7,29 +7,24 @@ import ControlButton from "../components/ControlButton";
 export default function Room() {
   const { roomId } = useParams();
   const navigate = useNavigate();
+
+  // Local media state
   const [localStream, setLocalStream] = useState(null);
   const [isCameraOn, setIsCameraOn] = useState(true);
   const [isMicOn, setIsMicOn] = useState(true);
-  const [isRecording, setIsRecording] = useState(false);
-  const [isScreenSharing, setIsScreenSharing] = useState(false);
-  const [zoomLevel, setZoomLevel] = useState(1);
-  const [isFullscreen, setIsFullscreen] = useState(false);
-  const [focusedVideo, setFocusedVideo] = useState(null); // null, 'local', 'remote'
   const localVideoRef = useRef(null);
-  const mediaRecorderRef = useRef(null);
-  const recordedChunksRef = useRef([]);
 
-  // chat state (UI ONLY)
+  // WebRTC state
+  const [remoteStreams, setRemoteStreams] = useState([]);
+  const peerConnectionsRef = useRef({});
+  const socketRef = useRef(null);
+
+  // Chat state
   const [messages, setMessages] = useState([
     { sender: "System", text: "Welcome to the room" },
   ]);
   const [input, setInput] = useState("");
-
-  // ref for chat scroll
   const chatEndRef = useRef(null);
-
-  // WebSocket signaling
-  const socketRef = useRef(null);
 
   // Get user media on component mount
   useEffect(() => {
@@ -66,6 +61,125 @@ export default function Room() {
     }
   }, [localStream]);
 
+  // Socket.IO and WebRTC setup
+  useEffect(() => {
+    const serverUrl = import.meta.env.VITE_SOCKET_URL || "http://localhost:5000";
+    socketRef.current = io(serverUrl);
+
+    const socket = socketRef.current;
+
+    socket.on("connect", () => {
+      console.log("Connected to signaling server");
+      // For development, use a simple user ID
+      const userId = `user_${socket.id}`;
+      socket.emit("join_room", { room_id: roomId, token: userId });
+    });
+
+    socket.on("disconnect", () => {
+      console.log("Disconnected from signaling server");
+    });
+
+    // WebRTC signaling
+    socket.on("offer", async (data) => {
+      const { offer, from } = data;
+      const pc = createPeerConnection(from);
+      await pc.setRemoteDescription(new RTCSessionDescription(offer));
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      socketRef.current.emit("answer", { answer, room_id: roomId, token: `user_${socketRef.current.id}` });
+    });
+
+    socket.on("answer", async (data) => {
+      const { answer, from } = data;
+      const pc = peerConnectionsRef.current[from];
+      if (pc) {
+        await pc.setRemoteDescription(new RTCSessionDescription(answer));
+      }
+    });
+
+    socket.on("ice_candidate", (data) => {
+      const { candidate, from } = data;
+      const pc = peerConnectionsRef.current[from];
+      if (pc) {
+        pc.addIceCandidate(new RTCIceCandidate(candidate));
+      }
+    });
+
+    socket.on("user_joined", (data) => {
+      const { user_id } = data;
+      if (user_id !== socket.id) {
+        createPeerConnection(user_id);
+      }
+    });
+
+    socket.on("user_left", (data) => {
+      const { user_id } = data;
+      if (peerConnectionsRef.current[user_id]) {
+        peerConnectionsRef.current[user_id].close();
+        delete peerConnectionsRef.current[user_id];
+        setRemoteStreams((prev) => prev.filter((s) => s.id !== user_id));
+      }
+    });
+
+    socket.on("chat_message", (data) => {
+      setMessages((prev) => [...prev, data]);
+    });
+
+    socket.on("error", (data) => {
+      console.error("Socket error:", data.message);
+      alert(data.message);
+    });
+
+    // Cleanup function
+    return () => {
+      socket.disconnect();
+      Object.values(peerConnectionsRef.current).forEach((pc) => pc.close());
+      if (localStream) {
+        localStream.getTracks().forEach((track) => track.stop());
+      }
+    };
+  }, [roomId, localStream]);
+
+  const createPeerConnection = (userId) => {
+    const pc = new RTCPeerConnection({
+      iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+    });
+
+    peerConnectionsRef.current[userId] = pc;
+
+    // Add local stream
+    if (localStream) {
+      localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
+    }
+
+    pc.onicecandidate = (event) => {
+      if (event.candidate) {
+        socketRef.current.emit("ice_candidate", {
+          candidate: event.candidate,
+          room_id: roomId,
+          token: `user_${socketRef.current.id}`,
+        });
+      }
+    };
+
+    pc.ontrack = (event) => {
+      setRemoteStreams((prev) => [
+        ...prev.filter((s) => s.id !== userId),
+        { id: userId, stream: event.streams[0] },
+      ]);
+    };
+
+    // Create offer if we're the initiator
+    if (Object.keys(peerConnectionsRef.current).length === 1) {
+      pc.createOffer().then((offer) => {
+        pc.setLocalDescription(offer);
+        socketRef.current.emit("offer", { offer, room_id: roomId, token: `user_${socketRef.current.id}` });
+      });
+    }
+
+    return pc;
+  };
+
   const toggleCamera = () => {
     if (localStream) {
       const videoTrack = localStream.getVideoTracks()[0];
@@ -86,170 +200,34 @@ export default function Room() {
     }
   };
 
-  const toggleRecording = () => {
-    if (!localStream) return;
-
-    if (!isRecording) {
-      // Start recording
-      recordedChunksRef.current = [];
-      const mediaRecorder = new MediaRecorder(localStream);
-      mediaRecorderRef.current = mediaRecorder;
-
-      mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          recordedChunksRef.current.push(event.data);
-        }
-      };
-
-      mediaRecorder.onstop = () => {
-        const blob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `video-call-${roomId}-${Date.now()}.webm`;
-        a.click();
-        URL.revokeObjectURL(url);
-      };
-
-      mediaRecorder.start();
-      setIsRecording(true);
-    } else {
-      // Stop recording
-      if (mediaRecorderRef.current) {
-        mediaRecorderRef.current.stop();
-      }
-      setIsRecording(false);
-    }
-  };
-
-  const toggleScreenShare = async () => {
-    try {
-      if (!isScreenSharing) {
-        const screenStream = await navigator.mediaDevices.getDisplayMedia({
-          video: true,
-          audio: true
-        });
-        setLocalStream(screenStream);
-        setIsScreenSharing(true);
-        
-        screenStream.getVideoTracks()[0].onended = () => {
-          // User stopped sharing, go back to camera
-          getUserMedia();
-          setIsScreenSharing(false);
-        };
-      } else {
-        // Stop screen sharing, go back to camera
-        localStream.getTracks().forEach(track => track.stop());
-        await getUserMedia();
-        setIsScreenSharing(false);
-      }
-    } catch (error) {
-      console.error('Error sharing screen:', error);
-    }
-  };
-
-  const getUserMedia = async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: true,
-        audio: true
-      });
-      setLocalStream(stream);
-    } catch (error) {
-      console.error('Error accessing camera:', error);
-    }
-  };
-
-  const copyRoomId = async () => {
-    try {
-      await navigator.clipboard.writeText(roomId);
-      alert('Room ID copied to clipboard!');
-    } catch (error) {
-      console.error('Failed to copy room ID:', error);
-    }
-  };
-
-  const zoomIn = () => {
-    setZoomLevel(prev => Math.min(prev + 0.2, 3));
-  };
-
-  const zoomOut = () => {
-    setZoomLevel(prev => Math.max(prev - 0.2, 0.5));
-  };
-
-  const toggleFullscreen = () => {
-    if (!document.fullscreenElement) {
-      document.documentElement.requestFullscreen();
-      setIsFullscreen(true);
-    } else {
-      document.exitFullscreen();
-      setIsFullscreen(false);
-    }
-  };
-
-  // Listen for fullscreen changes
-  useEffect(() => {
-    const handleFullscreenChange = () => {
-      setIsFullscreen(!!document.fullscreenElement);
-    };
-    
-    document.addEventListener('fullscreenchange', handleFullscreenChange);
-    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
-  }, []);
-
-  const toggleVideoFocus = (videoType) => {
-    if (focusedVideo === videoType) {
-      setFocusedVideo(null); // Return to normal view
-    } else {
-      setFocusedVideo(videoType); // Focus on this video
-    }
-    
-    // Ensure video stream is properly connected after focus change
-    setTimeout(() => {
-      if (localVideoRef.current && localStream) {
-        localVideoRef.current.srcObject = localStream;
-      }
-    }, 100);
-  };
-
-  useEffect(() => {
-    // TODO: Enable when backend is ready
-    // Connect to signaling server
-    // const serverUrl = import.meta.env.VITE_SOCKET_URL || "http://localhost:5000";
-    // socketRef.current = io(serverUrl);
-    
-    console.log("Socket connection disabled - backend not ready");
-    
-    // Cleanup function
-    return () => {
-      if (socketRef.current) {
-        socketRef.current.disconnect();
-      }
-    };
-  }, [roomId]);
-
   const sendMessage = () => {
     if (!input.trim()) return;
 
-    // add new message
-    setMessages((prev) => [...prev, { sender: "You", text: input }]);
+    const message = { sender: "You", text: input };
+    setMessages((prev) => [...prev, message]);
+    socketRef.current.emit("chat_message", { ...message, room_id: roomId });
     setInput("");
   };
 
-  // scroll to bottom when messages update
+  // Scroll to bottom when messages update
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  const allStreams = [
+    { id: "local", stream: localStream, name: "You" },
+    ...remoteStreams.map((rs) => ({ ...rs, name: `User ${rs.id.slice(0, 4)}` })),
+  ];
+
   return (
     <div className="w-screen h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 flex flex-col relative overflow-hidden">
-      
+
       {/* Background */}
       <div className="absolute inset-0 opacity-10">
         <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-gradient-to-r from-cyan-500/20 to-blue-500/20 rounded-full filter blur-3xl animate-pulse"></div>
         <div className="absolute bottom-1/4 right-1/4 w-80 h-80 bg-gradient-to-r from-blue-500/20 to-purple-500/20 rounded-full filter blur-3xl animate-pulse animation-delay-2000"></div>
       </div>
-      
+
       {/* Header */}
       <header className="bg-black/30 backdrop-blur-xl shadow-lg px-3 sm:px-6 py-2 sm:py-4 border-b border-white/10 relative z-10 flex-shrink-0">
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 sm:gap-4">
@@ -261,18 +239,12 @@ export default function Room() {
               <h1 className="text-sm sm:text-lg font-bold text-white">Meeting Room</h1>
               <p className="text-xs text-gray-400">ID: {roomId}</p>
             </div>
-            <button
-              onClick={copyRoomId}
-              className="px-2 py-1 sm:px-3 sm:py-1.5 bg-white/10 border border-white/20 text-white rounded-lg font-medium hover:bg-white/20 transition-all duration-300 text-xs"
-            >
-              Copy
-            </button>
           </div>
-          
+
           <div className="flex items-center gap-2 sm:gap-4 text-xs sm:text-sm">
             <div className="flex items-center gap-1 sm:gap-2 px-2 py-1 sm:px-3 sm:py-1.5 bg-white/10 backdrop-blur rounded-lg border border-white/20">
               <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse"></div>
-              <span className="text-white font-medium">2 users</span>
+              <span className="text-white font-medium">{allStreams.length} users</span>
             </div>
           </div>
         </div>
@@ -280,171 +252,23 @@ export default function Room() {
 
       {/* Main Content */}
       <div className="flex flex-col lg:flex-row flex-1 overflow-hidden relative min-h-0">
-        
+
         {/* Video Grid */}
         <div className="flex-1 p-2 sm:p-4 min-h-0">
-          {focusedVideo ? (
-            // Focused video view
-            <div className="h-full">
-              {focusedVideo === 'local' ? (
-                // Focused local video
-                <div className="relative bg-gradient-to-br from-slate-800 to-slate-900 rounded-lg sm:rounded-xl overflow-hidden border border-white/10 shadow-xl h-full">
-                  <video
-                    ref={localVideoRef}
-                    autoPlay
-                    muted
-                    playsInline
-                    className="w-full h-full object-cover"
-                    style={{ transform: `scale(${zoomLevel})` }}
-                  />
-                  
-                  {/* Video Controls Overlay */}
-                  <div className="absolute top-2 left-2 flex gap-1">
-                    <div className="px-2 py-1 bg-black/60 backdrop-blur rounded-full text-white text-sm font-medium">
-                      {isScreenSharing ? "Screen" : "You"} (Focused)
-                    </div>
-                    {!isCameraOn && (
-                      <div className="px-2 py-1 bg-red-600/80 backdrop-blur rounded-full text-white text-sm font-medium">
-                        Off
-                      </div>
-                    )}
-                  </div>
-                  
-                  {/* Controls */}
-                  <div className="absolute top-2 right-2 flex gap-1">
-                    <button
-                      onClick={zoomOut}
-                      className="w-6 h-6 bg-black/60 backdrop-blur rounded-lg flex items-center justify-center text-white hover:bg-black/80 transition-all font-bold text-xs"
-                    >
-                      −
-                    </button>
-                    <button
-                      onClick={zoomIn}
-                      className="w-6 h-6 bg-black/60 backdrop-blur rounded-lg flex items-center justify-center text-white hover:bg-black/80 transition-all font-bold text-xs"
-                    >
-                      +
-                    </button>
-                    <button
-                      onClick={() => toggleVideoFocus('local')}
-                      className="w-6 h-6 bg-black/60 backdrop-blur rounded-lg flex items-center justify-center text-white hover:bg-black/80 transition-all text-xs"
-                    >
-                      ⛶
-                    </button>
-                  </div>
-                  
-                  {/* Camera Off Overlay */}
-                  {!isCameraOn && (
-                    <div className="absolute inset-0 bg-black/80 flex items-center justify-center">
-                      <div className="text-center">
-                        <div className="w-16 h-16 bg-gradient-to-r from-cyan-500 to-blue-500 rounded-full flex items-center justify-center text-xl font-bold mb-2 mx-auto text-white">
-                          {isScreenSharing ? "S" : "Y"}
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              ) : (
-                // Focused remote video (placeholder)
-                <div className="relative bg-gradient-to-br from-slate-800 to-slate-900 rounded-lg sm:rounded-xl overflow-hidden border border-white/10 shadow-xl h-full flex items-center justify-center">
-                  <div className="text-center">
-                    <div className="w-20 h-20 bg-gradient-to-r from-purple-500 to-pink-500 rounded-full flex items-center justify-center text-2xl font-bold mb-4 mx-auto text-white">
-                      A
-                    </div>
-                    <p className="text-white text-lg">Alice (Focused)</p>
-                  </div>
-                  <button
-                    onClick={() => toggleVideoFocus('remote')}
-                    className="absolute top-2 right-2 w-6 h-6 bg-black/60 backdrop-blur rounded-lg flex items-center justify-center text-white hover:bg-black/80 transition-all text-xs"
-                  >
-                    ⛶
-                  </button>
-                </div>
-              )}
-            </div>
-          ) : (
-            // Normal grid view
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-2 sm:gap-4 h-full">
-              
-              {/* Local Video */}
-              <div className="relative bg-gradient-to-br from-slate-800 to-slate-900 rounded-lg sm:rounded-xl overflow-hidden border border-white/10 shadow-xl min-h-[150px] sm:min-h-[250px]">
-                <video
-                  ref={localVideoRef}
-                  autoPlay
-                  muted
-                  playsInline
-                  className="w-full h-full object-cover"
-                  style={{ transform: `scale(${zoomLevel})` }}
-                />
-                
-                {/* Video Controls Overlay */}
-                <div className="absolute top-1 sm:top-2 left-1 sm:left-2 flex gap-1">
-                  <div className="px-1.5 py-0.5 sm:px-2 sm:py-1 bg-black/60 backdrop-blur rounded-full text-white text-xs font-medium">
-                    {isScreenSharing ? "Screen" : "You"}
-                  </div>
-                  {!isCameraOn && (
-                    <div className="px-1.5 py-0.5 sm:px-2 sm:py-1 bg-red-600/80 backdrop-blur rounded-full text-white text-xs font-medium">
-                      Off
-                    </div>
-                  )}
-                </div>
-                
-                {/* Zoom Controls */}
-                <div className="absolute top-1 sm:top-2 right-1 sm:right-2 flex gap-1">
-                  <button
-                    onClick={zoomOut}
-                    className="w-5 h-5 sm:w-6 sm:h-6 bg-black/60 backdrop-blur rounded-lg flex items-center justify-center text-white hover:bg-black/80 transition-all font-bold text-xs"
-                  >
-                    −
-                  </button>
-                  <button
-                    onClick={zoomIn}
-                    className="w-5 h-5 sm:w-6 sm:h-6 bg-black/60 backdrop-blur rounded-lg flex items-center justify-center text-white hover:bg-black/80 transition-all font-bold text-xs"
-                  >
-                    +
-                  </button>
-                  <button
-                    onClick={() => toggleVideoFocus('local')}
-                    className="w-5 h-5 sm:w-6 sm:h-6 bg-black/60 backdrop-blur rounded-lg flex items-center justify-center text-white hover:bg-black/80 transition-all text-xs"
-                  >
-                    ⛶
-                  </button>
-                </div>
-                
-                {/* Camera Off Overlay */}
-                {!isCameraOn && (
-                  <div className="absolute inset-0 bg-black/80 flex items-center justify-center">
-                    <div className="text-center">
-                      <div className="w-8 h-8 sm:w-16 sm:h-16 bg-gradient-to-r from-cyan-500 to-blue-500 rounded-full flex items-center justify-center text-sm sm:text-xl font-bold mb-1 sm:mb-2 mx-auto text-white">
-                        {isScreenSharing ? "S" : "Y"}
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </div>
-              
-              {/* Remote Video Placeholder */}
-              <div className="relative min-h-[150px] sm:min-h-[250px] bg-gradient-to-br from-slate-800 to-slate-900 rounded-lg sm:rounded-xl overflow-hidden border border-white/10 shadow-xl flex items-center justify-center">
-                <div className="text-center">
-                  <div className="w-12 h-12 sm:w-20 sm:h-20 bg-gradient-to-r from-purple-500 to-pink-500 rounded-full flex items-center justify-center text-lg sm:text-2xl font-bold mb-2 sm:mb-4 mx-auto text-white">
-                    A
-                  </div>
-                  <p className="text-white/80 text-sm sm:text-base">Waiting...</p>
-                </div>
-                <button
-                  onClick={() => toggleVideoFocus('remote')}
-                  className="absolute top-1 sm:top-2 right-1 sm:right-2 w-5 h-5 sm:w-6 sm:h-6 bg-black/60 backdrop-blur rounded-lg flex items-center justify-center text-white hover:bg-black/80 transition-all text-xs"
-                >
-                  ⛶
-                </button>
-              </div>
-              
-            </div>
-          )}
+          <div className={`grid gap-2 sm:gap-4 h-full ${
+            allStreams.length === 1 ? 'grid-cols-1' :
+            allStreams.length === 2 ? 'grid-cols-1 lg:grid-cols-2' :
+            'grid-cols-1 lg:grid-cols-2 xl:grid-cols-3'
+          }`}>
+            {allStreams.map((tile) => (
+              <VideoTile key={tile.id} stream={tile.stream} name={tile.name} />
+            ))}
+          </div>
         </div>
 
         {/* Chat Sidebar - Hidden on mobile */}
         <div className="hidden lg:flex w-80 bg-black/40 backdrop-blur-xl border-l border-white/10 flex-col shadow-xl min-h-0">
-          
+
           {/* Chat Header */}
           <div className="p-4 border-b border-white/10 flex-shrink-0">
             <h3 className="text-lg font-semibold text-white">Chat</h3>
@@ -455,7 +279,7 @@ export default function Room() {
             {messages.map((msg, i) => {
               const isYou = msg.sender === "You";
               const isSystem = msg.sender === "System";
-              
+
               if (isSystem) {
                 return (
                   <div key={i} className="text-center">
@@ -465,7 +289,7 @@ export default function Room() {
                   </div>
                 );
               }
-              
+
               return (
                 <div key={i} className={`flex ${isYou ? "justify-end" : "justify-start"}`}>
                   <div className="max-w-[80%]">
@@ -516,17 +340,18 @@ export default function Room() {
         <div className="flex justify-center gap-1 sm:gap-3">
           <ControlButton type="mute" isActive={isMicOn} onClick={toggleMic} />
           <ControlButton type="camera" isActive={isCameraOn} onClick={toggleCamera} />
-          <ControlButton type="screen" isActive={isScreenSharing} onClick={toggleScreenShare} />
-          <ControlButton type="record" isActive={isRecording} onClick={toggleRecording} />
-          <ControlButton type="leave" onClick={() => {
-            if (localStream) {
-              localStream.getTracks().forEach(track => track.stop());
-            }
-            if (mediaRecorderRef.current && isRecording) {
-              mediaRecorderRef.current.stop();
-            }
-            navigate("/");
-          }} />
+          <ControlButton
+            type="leave"
+            onClick={() => {
+              if (localStream) {
+                localStream.getTracks().forEach(track => track.stop());
+              }
+              if (socketRef.current) {
+                socketRef.current.emit("leave_room", { room_id: roomId });
+              }
+              navigate("/");
+            }}
+          />
         </div>
       </div>
     </div>

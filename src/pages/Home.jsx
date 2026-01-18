@@ -1,21 +1,9 @@
 import { useNavigate } from "react-router-dom";
-import { useState, useEffect } from "react";
-import LoginModal from "../components/LoginModal";
-import { auth } from "../firebase";
-import { onAuthStateChanged, signOut } from "firebase/auth";
+import { useState } from "react";
 
 export default function Home() {
   const navigate = useNavigate();
   const [joinRoomId, setJoinRoomId] = useState("");
-  const [isLoginOpen, setIsLoginOpen] = useState(false);
-  const [user, setUser] = useState(null);
-
-  useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-      setUser(currentUser);
-    });
-    return () => unsubscribe();
-  }, []);
 
   const createRoom = async () => {
     console.log("Creating room...");
@@ -32,14 +20,7 @@ export default function Home() {
 
   const joinRoom = () => {
     if (!joinRoomId.trim()) return alert("Please enter a room ID.");
-    navigate(`/room/${joinRoomId}`);
-  };
-
-  const openLogin = () => setIsLoginOpen(true);
-  const closeLogin = () => setIsLoginOpen(false);
-  const logout = async () => {
-    await signOut(auth);
-    setUser(null);
+    navigate(`/room/${joinRoomId}/premeeting`);
   };
 
   return (
@@ -57,29 +38,9 @@ export default function Home() {
         </div>
 
         <div className="w-full sm:w-auto">
-          {user ? (
-            <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 sm:gap-4">
-              <div className="flex items-center gap-3 px-3 sm:px-4 py-2 bg-white/10 backdrop-blur rounded-full border border-white/20">
-                <div className="w-6 h-6 sm:w-8 sm:h-8 bg-gradient-to-r from-cyan-500 to-purple-500 rounded-full flex items-center justify-center text-white font-bold text-xs sm:text-sm">
-                  {user.email ? user.email.charAt(0).toUpperCase() : "U"}
-                </div>
-                <span className="text-white font-medium text-sm sm:text-base">{user.email?.split('@')[0] || 'User'}</span>
-              </div>
-              <button
-                onClick={logout}
-                className="px-3 sm:px-4 py-2 rounded-lg bg-red-600/20 border border-red-500/30 text-red-400 font-medium hover:bg-red-600/30 transition-all duration-300 text-sm"
-              >
-                Logout
-              </button>
-            </div>
-          ) : (
-            <button
-              onClick={openLogin}
-              className="w-full sm:w-auto px-4 sm:px-6 py-2 sm:py-3 rounded-lg bg-gradient-to-r from-cyan-600 to-blue-600 text-white font-semibold hover:from-cyan-700 hover:to-blue-700 shadow-lg transition-all duration-300 text-sm sm:text-base"
-            >
-              Sign In
-            </button>
-          )}
+          <div className="text-white text-sm sm:text-base font-medium">
+            Video Call App
+          </div>
         </div>
       </header>
 
@@ -139,7 +100,7 @@ export default function Home() {
                       </button>
                     </div>
                     <button
-                      onClick={() => navigate(`/room/${joinRoomId}`)}
+                      onClick={() => navigate(`/room/${joinRoomId}/premeeting`)}
                       className="w-full mt-2 py-2 px-4 bg-gradient-to-r from-green-600 to-emerald-600 text-white rounded-lg font-semibold hover:from-green-700 hover:to-emerald-700 transition-all text-sm"
                     >
                       Enter Room
@@ -204,9 +165,6 @@ export default function Home() {
         </div>
 
       </main>
-
-      {/* Login modal */}
-      <LoginModal isOpen={isLoginOpen} onClose={closeLogin} />
 
     </div>
   );
