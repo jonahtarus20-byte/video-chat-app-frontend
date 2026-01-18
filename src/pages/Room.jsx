@@ -1,6 +1,7 @@
 import { useParams, useNavigate } from "react-router-dom";
 import { useState, useEffect, useRef } from "react";
 import io from "socket.io-client";
+import { auth } from "../firebase";
 import VideoTile from "../components/VideoTile";
 import ControlButton from "../components/ControlButton";
 
@@ -41,7 +42,11 @@ export default function Room() {
 
     socket.on("connect", () => {
       console.log("Connected to signaling server");
-      socket.emit("join_room", { room_id: roomId });
+      auth.currentUser?.getIdToken().then((token) => {
+        socket.emit("join_room", { room_id: roomId, token });
+      }).catch((err) => {
+        console.error("Error getting JWT token:", err);
+      });
     });
 
     socket.on("disconnect", () => {
@@ -55,7 +60,11 @@ export default function Room() {
       await pc.setRemoteDescription(new RTCSessionDescription(offer));
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
-      socket.emit("answer", { answer, to: from, room_id: roomId });
+      auth.currentUser?.getIdToken().then((token) => {
+        socket.emit("answer", { answer, to: from, room_id: roomId, token });
+      }).catch((err) => {
+        console.error("Error getting JWT token:", err);
+      });
     });
 
     socket.on("answer", async (data) => {
@@ -117,10 +126,15 @@ export default function Room() {
 
     pc.onicecandidate = (event) => {
       if (event.candidate) {
-        socketRef.current.emit("ice_candidate", {
-          candidate: event.candidate,
-          to: userId,
-          room_id: roomId,
+        auth.currentUser?.getIdToken().then((token) => {
+          socketRef.current.emit("ice_candidate", {
+            candidate: event.candidate,
+            to: userId,
+            room_id: roomId,
+            token,
+          });
+        }).catch((err) => {
+          console.error("Error getting JWT token:", err);
         });
       }
     };
